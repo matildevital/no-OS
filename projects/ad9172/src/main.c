@@ -55,20 +55,20 @@ int main(void)
 	};
 
 	struct hmc7044_chan_spec chan_spec[4] = {
-		{.disable = 0, .num = 2, .divider = 8, .driver_mode = 1},		/* DAC_CLK */
-		{.disable = 0, .num = 3, .divider = 512, .driver_mode = 1, .is_sysref = true},		/* DAC_SYSREF */
-		{.disable = 0, .num = 12, .divider = 8, .driver_mode = 2},		/* FPGA_CLK */
-		{.disable = 0, .num = 13, .divider = 512, .driver_mode = 2, .is_sysref = true},	/* FPGA_SYSREF */
+		{.disable = 0, .num = 2, .divider = 16, .driver_mode = 1},		                    /* DAC_CLK (200 MHz) */
+		{.disable = 0, .num = 3, .divider = 512, .driver_mode = 1, .is_sysref = true},		/* DAC_SYSREF (6.25 MHz) */
+		{.disable = 0, .num = 12, .divider = 16, .driver_mode = 2},		                    /* FPGA_CLK (200 MHz) */
+		{.disable = 0, .num = 13, .divider = 512, .driver_mode = 2, .is_sysref = true},	    /* FPGA_SYSREF (6.25 MHz) */
 	};
 
 	struct hmc7044_init_param hmc7044_param = {
 		.spi_init = &hmc7044_spi_param,
 		.clkin_freq = {122880000, 0, 0, 0},
-		.vcxo_freq = 122880000,
-		.pll2_freq = 2949120000,
+		.vcxo_freq = 122880000,                         /* Internal 122.88 MHz VCXO */
+		.pll2_freq = 3200000000,
 		.pll1_loop_bw = 200,
 		.sysref_timer_div = 1024,
-		.jesd204_max_sysref_frequency_hz = 2000000,
+		.jesd204_max_sysref_frequency_hz = 6250000,     /* 6.25 MHz target */
 		.pulse_gen_mode = 0,
 		.in_buf_mode = {0x15, 0, 0, 0, 0x15},
 		.gpi_ctrl = {0x00, 0x00, 0x00, 0x00},
@@ -78,19 +78,20 @@ int main(void)
 		.export_no_os_clk = true
 	};
 
+	/* JESD204 Link Config: Mode 0 (M=2, L=1, F=4, S=1, HD=1, N=16, NP=16) */
 	struct jesd204_tx_init tx_jesd_init = {
 		.name = "tx_jesd",
 		.base = TX_JESD_BASEADDR,
-		.octets_per_frame = 2,
-		.frames_per_multiframe = 32,
-		.converters_per_device = 4,
-		.converter_resolution = 16,
-		.bits_per_sample = 16,
-		.high_density = true,
+		.octets_per_frame = 4,       /* F = 4 */
+		.frames_per_multiframe = 32, /* K = 32 */
+		.converters_per_device = 2,  /* M = 2 */
+		.converter_resolution = 16,  /* N = 16 */
+		.bits_per_sample = 16,       /* NP = 16 */
+		.high_density = true,        /* HD = 1 */
 		.control_bits_per_sample = 0,
 		.subclass = 1,
-		.device_clk_khz = 184320,	/* (lane_clk_khz / 40) */
-		.lane_clk_khz = 7372800,	/* LaneRate = ( M/L)*NP*(10/8)*DataRate */
+		.device_clk_khz = 200000,	/* (lane_clk_khz / 40) */ /* tx_out_clk = 200 MHz */
+		.lane_clk_khz = 8000000,	/* LaneRate = ( M/L)*NP*(10/8)*DataRate */ /* Lane Rate = 8 Gbps */
 	};
 
 	struct adxcvr_init tx_adxcvr_init = {
@@ -99,8 +100,8 @@ int main(void)
 		.sys_clk_sel = ADXCVR_SYS_CLK_QPLL0,
 		.out_clk_sel = ADXCVR_REFCLK_DIV2,
 		.lpm_enable = 1,
-		.lane_rate_khz = 7372800,	/* LaneRate = ( M/L)*NP*(10/8)*DataRate */
-		.ref_rate_khz = 368640,		/* FPGA_CLK, output 12 of HMC 7044 */
+		.lane_rate_khz = 8000000,	/* LaneRate = ( M/L)*NP*(10/8)*DataRate */
+		.ref_rate_khz = 200000,		/* FPGA_CLK, output 12 of HMC 7044 */
 		.export_no_os_clk = true
 	};
 
@@ -127,18 +128,18 @@ int main(void)
 			.extra = &xilinx_gpio_init_param
 		},
 		.gpio_txen0 = {
-			.number = 54 + 22,
+			.number = 54 + 1,  /* dac_ctrl[1] */
 			.platform_ops = &xil_gpio_ops,
 			.extra = &xilinx_gpio_init_param
 		},
 		.gpio_txen1 = {
-			.number = 54 + 23,
+			.number = 54 + 2, /* dac_ctrl[2] */
 			.platform_ops = &xil_gpio_ops,
 			.extra = &xilinx_gpio_init_param
 		},
-		.dac_rate_khz = 11796480,		/* or sample rate */
-		.dac_clkin_Hz = 368640000,		/* DAC_CLK, output 2 of HMC 7044 */
-		.jesd_link_mode = 4,
+		.dac_rate_khz = 12000000,		/* or sample rate */
+		.dac_clkin_Hz = 200000000,		/* DAC_CLK, output 2 of HMC 7044 */
+		.jesd_link_mode = 0,            /* ADI DAC Mode 0 */
 		.jesd_subclass = 1,
 		.dac_interpolation = 8,
 		.channel_interpolation = 4,
@@ -178,9 +179,9 @@ int main(void)
 	struct axi_dac_init tx_dac_init = {
 		.name = "tx_dac",
 		.base = TX_CORE_BASEADDR,
-		.num_channels = 4,
+		.num_channels = 2,           /* M = 2 converters */
 		.channels = chan_spec_dac,
-		.rate = 3
+		.rate = 1
 	};
 
 #ifdef DMA_EXAMPLE

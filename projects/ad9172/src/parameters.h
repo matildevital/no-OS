@@ -10,6 +10,10 @@
 #ifndef __PARAMETERS_H__
 #define __PARAMETERS_H__
 
+#ifndef PLATFORM_ZYNQMP
+#define PLATFORM_ZYNQMP
+#endif
+
 #include <xparameters.h>
 
 #ifdef PLATFORM_ZYNQMP
@@ -24,7 +28,7 @@
 
 #define UART_DEVICE_ID				XPAR_XUARTPS_0_DEVICE_ID
 #define UART_IRQ_ID				XPAR_XUARTPS_1_INTR
-#define UART_BAUDRATE                           921600
+#define UART_BAUDRATE                           115200
 
 #define TX_JESD_BASEADDR			XPAR_DAC_JESD204_LINK_TX_AXI_BASEADDR
 #define TX_XCVR_BASEADDR			XPAR_DAC_JESD204_XCVR_BASEADDR
