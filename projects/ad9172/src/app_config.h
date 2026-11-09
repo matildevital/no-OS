@@ -11,11 +11,15 @@
 #ifndef APP_CONFIG_H_
 #define APP_CONFIG_H_
 
-#define DMA_EXAMPLE
+//#define DMA_EXAMPLE
 
 //#define IIO_SUPPORT
 
 #define USE_JESD_FSM
+
+/* Debug: read HMC7044 ID/alarm registers over SPI before hmc7044_init().
+ * Comment out once the HMC7044 initialises correctly. */
+//#define HMC7044_SPI_PROBE
 
 // Mode 4 default, uncomment the following line for mode 10
 //#define JESD_MODE_10

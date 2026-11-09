@@ -24,6 +24,7 @@
 #include "xilinx_spi.h"
 #include "no_os_gpio.h"
 #include "xilinx_gpio.h"
+#include "xil_io.h"
 
 #ifdef DMA_EXAMPLE
 #include "axi_dmac.h"
@@ -34,6 +35,97 @@
 #include "iio_axi_dac.h"
 #include "xilinx_uart.h"
 #endif
+
+/*
+ * ADDED (diagnostic only): tests the SPI path to the HMC7044 using only ADI's
+ * normal no-OS SPI functions. The HMC7044 answers SPI as soon as it is powered,
+ * it does not need hmc7044_init() first.
+ * Frame format (3 bytes): [read/write bit + address high] [address low] [data]
+ * Register 0x08 is the HMC7044 "scratchpad": whatever you write, you read back.
+ * Registers 0x78..0x7A are the read-only Product ID: datasheet default 0x01, 0x52, 0x04.
+ */
+static int hmc7044_spi_test(struct no_os_spi_init_param *spi_param)
+{
+	struct no_os_spi_desc *spi;
+	uint8_t buf[3];
+	int ret;
+	int good = 1;
+ 
+	/* Test 1: open the SPI port */
+	ret = no_os_spi_init(&spi, spi_param);
+	if (ret != 0) {
+		printf("[FAIL] SPI test 1/5: no_os_spi_init() returned %d (PS SPI could not be opened)\n", ret);
+		return -1;
+	}
+	printf("[ OK ] SPI test 1/5: SPI port opened\n");
+ 
+	/* DIAGNOSTIC (read only): SPI0 registers. After the fix the driver's own
+	 * configuration should be visible here during transfers. */
+	printf("[INFO] SPI0 registers: CR=0x%08X ISR=0x%08X\n",
+	       (unsigned int)*(volatile uint32_t *)0xFF040000,
+	       (unsigned int)*(volatile uint32_t *)0xFF040004);
+ 
+	/* Test 2: write 0xAD into register 0x08 */
+	buf[0] = 0x00; buf[1] = 0x08; buf[2] = 0xAD;
+	ret = no_os_spi_write_and_read(spi, buf, 3);
+	if (ret != 0) {
+		printf("[FAIL] SPI test 2/5: write returned %d -> the SPI driver itself refused the transfer\n"
+		       "       (software/PS-SPI problem, NOT the chip or the wiring)\n", ret);
+		good = 0;
+	} else {
+		printf("[ OK ] SPI test 2/5: write transfer accepted\n");
+	}
+ 
+	/* Test 3: read register 0x08 back, expect 0xAD */
+	buf[0] = 0x80; buf[1] = 0x08; buf[2] = 0x00;
+	ret = no_os_spi_write_and_read(spi, buf, 3);
+	if (ret != 0) {
+		printf("[FAIL] SPI test 3/5: read returned %d -> the SPI driver itself refused the transfer\n", ret);
+		good = 0;
+	} else if (buf[2] == 0xAD) {
+		printf("[ OK ] SPI test 3/5: read back 0xAD -> the HMC7044 answers on SPI!\n");
+	} else {
+		printf("[FAIL] SPI test 3/5: read back 0x%02X instead of 0xAD -> transfers work but the chip\n"
+		       "       does not answer (check wiring/pins, VADJ, board power)\n", (unsigned int)buf[2]);
+		good = 0;
+	}
+ 
+	/* Test 4: read the Product ID registers 0x78, 0x79, 0x7A (datasheet: 0x01, 0x52, 0x04) */
+	{
+		static const uint8_t id_expected[3] = {0x01, 0x52, 0x04};
+		uint8_t id[3] = {0, 0, 0};
+		int id_ok = 1;
+		int i;
+ 
+		for (i = 0; i < 3; i++) {
+			buf[0] = 0x80; buf[1] = 0x78 + i; buf[2] = 0x00;
+			ret = no_os_spi_write_and_read(spi, buf, 3);
+			if (ret != 0)
+				id_ok = 0;
+			id[i] = buf[2];
+			if (id[i] != id_expected[i])
+				id_ok = 0;
+		}
+		if (id_ok) {
+			printf("[ OK ] SPI test 4/5: Product ID = 0x%02X 0x%02X 0x%02X (matches HMC7044 datasheet)\n",
+			       id[0], id[1], id[2]);
+		} else {
+			printf("[FAIL] SPI test 4/5: Product ID = 0x%02X 0x%02X 0x%02X, expected 0x01 0x52 0x04\n",
+			       id[0], id[1], id[2]);
+			good = 0;
+		}
+	}
+ 
+	/* Test 5: show the alarm register 0x7D (information only).
+	 * Datasheet: bit 3 = 1 means PLL1 and PLL2 are both locked. */
+	buf[0] = 0x80; buf[1] = 0x7D; buf[2] = 0x00;
+	ret = no_os_spi_write_and_read(spi, buf, 3);
+	printf("[INFO] SPI test 5/5: alarm register 0x7D = 0x%02X (return %d); bit 3 set = PLLs locked\n",
+	       (unsigned int)buf[2], ret);
+ 
+	no_os_spi_remove(spi);
+	return good ? 0 : -1;
+}
 
 int main(void)
 {
@@ -65,7 +157,7 @@ int main(void)
 		.spi_init = &hmc7044_spi_param,
 		.clkin_freq = {122880000, 0, 0, 0},
 		.vcxo_freq = 122880000,                         /* Internal 122.88 MHz VCXO */
-		.pll2_freq = 3200000000,
+		.pll2_freq = 3200000000ULL,
 		.pll1_loop_bw = 200,
 		.sysref_timer_div = 1024,
 		.jesd204_max_sysref_frequency_hz = 6250000,     /* 6.25 MHz target */
@@ -98,7 +190,7 @@ int main(void)
 		.name = "tx_adxcvr",
 		.base = TX_XCVR_BASEADDR,
 		.sys_clk_sel = ADXCVR_SYS_CLK_QPLL0,
-		.out_clk_sel = ADXCVR_REFCLK_DIV2,
+		.out_clk_sel = ADXCVR_REFCLK,   /* CHANGED: tx_out_clk = 200 MHz (DIV2 gave 100 MHz) */
 		.lpm_enable = 1,
 		.lane_rate_khz = 8000000,	/* LaneRate = ( M/L)*NP*(10/8)*DataRate */
 		.ref_rate_khz = 200000,		/* FPGA_CLK, output 12 of HMC 7044 */
@@ -123,57 +215,40 @@ int main(void)
 	struct ad9172_init_param ad9172_param = {
 		.spi_init = &ad9172_spi_param,	/* no_os_spi_init_param */
 		.gpio_reset = {
-			.number = 54 + 0,
+			.number = 78 + 21 + 0,  /* CHANGED: ZynqMP EMIO starts at 78, dac_ctrl is EMIO 21..24 */
 			.platform_ops = &xil_gpio_ops,
 			.extra = &xilinx_gpio_init_param
 		},
 		.gpio_txen0 = {
-			.number = 54 + 1,  /* dac_ctrl[1] */
+			.number = 78 + 21 + 1,  /* dac_ctrl[1] */
 			.platform_ops = &xil_gpio_ops,
 			.extra = &xilinx_gpio_init_param
 		},
 		.gpio_txen1 = {
-			.number = 54 + 2, /* dac_ctrl[2] */
+			.number = 78 + 21 + 2, /* dac_ctrl[2] */
 			.platform_ops = &xil_gpio_ops,
 			.extra = &xilinx_gpio_init_param
 		},
-		.dac_rate_khz = 12000000,		/* or sample rate */
+		.dac_rate_khz = 3200000,		/* CHANGED: 200 MSPS x 8 x 2 = 3.2 GSPS */
 		.dac_clkin_Hz = 200000000,		/* DAC_CLK, output 2 of HMC 7044 */
 		.jesd_link_mode = 0,            /* ADI DAC Mode 0 */
 		.jesd_subclass = 1,
 		.dac_interpolation = 8,
-		.channel_interpolation = 4,
-		.clock_output_config = 4,
+		.channel_interpolation = 2,	/* CHANGED (was 4) */
+		.clock_output_config = 0,
 		.scrambling = 1,
 		.sysref_mode = 2, /* SYSREF_CONTINUOUS */
 		.pll_bypass = false,
 		.syncoutb_type = SIGNAL_LVDS,
 		.sysref_coupling = COUPLING_AC,
-		.logic_lanes_mapping = 0,
-		.use_jesd_fsm = false
+		.logic_lanes_mapping = 1,
+		.logic_lanes = {7, 1, 2, 3, 4, 5, 6, 0},
+		.use_jesd_fsm = true
 	};
 
-#ifdef JESD_MODE_10
-	tx_jesd_init.octets_per_frame = 1;
-	tx_jesd_init.converters_per_device = 2;
-	tx_jesd_init.device_clk_khz *= 2;
-	tx_jesd_init.lane_clk_khz *= 2;
-
-	tx_adxcvr_init.out_clk_sel = ADXCVR_REFCLK;
-	tx_adxcvr_init.lane_rate_khz *= 2;
-
-	ad9172_param.dac_rate_khz = 2949120;
-	ad9172_param.jesd_link_mode = 10;
-	ad9172_param.dac_interpolation = 1;
-	ad9172_param.channel_interpolation = 1;
-	ad9172_param.clock_output_config = 1;
-#endif
-
-	struct axi_dac_channel chan_spec_dac[4] = {
-		{.dds_frequency_0 = 40000000, .dds_phase_0 = 0, .dds_scale_0 = 50 * 1000},
-		{.dds_frequency_0 = 40000000, .dds_phase_0 = 90000, .dds_scale_0 = 50 * 1000},
-		{.dds_frequency_0 = 40000000, .dds_phase_0 = 0, .dds_scale_0 = 50 * 1000},
-		{.dds_frequency_0 = 40000000, .dds_phase_0 = 90000, .dds_scale_0 = 50 * 1000},
+	struct axi_dac_channel chan_spec_dac[2] = {
+		{.dds_frequency_0 = 40000000, .dds_phase_0 = 0, .dds_scale_0 = 500 * 1000},
+		{.dds_frequency_0 = 40000000, .dds_phase_0 = 90000, .dds_scale_0 = 500 * 1000},
 	};
 
 	struct axi_dac_init tx_dac_init = {
@@ -207,11 +282,23 @@ int main(void)
 	Xil_DCacheEnable();
 #endif /* XILINX_PLATFORM */
 
+	printf("\n===== ZCU104 + AD9174 JESD204B bring-up =====\n");
+
+	printf("PL access test: reading JESD TX AXI register 0x0 ... ");
+	printf("0x%08X (PL reachable)\n", (unsigned int)*(volatile uint32_t *)TX_JESD_BASEADDR);
+
+	/* ADDED: SPI test before touching the HMC7044 driver */
+	/*if (hmc7044_spi_test(&hmc7044_spi_param) != 0) {
+		printf("[FAIL] stopping: SPI to the HMC7044 does not work, see lines above\n");
+		goto error_0;
+	}*/
+
 	status = hmc7044_init(&hmc7044_device, &hmc7044_param);
 	if (status != 0) {
-		printf("hmc7044_init() error: %"PRIi32"\n", status);
-		goto error_1;
+		printf("[FAIL] hmc7044_init() error: %"PRIi32"\n", status);
+		goto error_0;	/* CHANGED from error_1: nothing valid to remove yet */
 	}
+	printf("[ OK ] hmc7044_init: clock chip configured\n");
 
 #ifdef USE_JESD_FSM
 	ad9172_param.use_jesd_fsm = true;
@@ -222,6 +309,7 @@ int main(void)
 		printf("error: %s: adxcvr_init() failed\n", tx_adxcvr_init.name);
 		goto error_3;
 	}
+	printf("[ OK ] adxcvr_init: transceiver configured\n");
 
 	tx_jesd_init.lane_clk = tx_adxcvr->clk_out;
 
@@ -230,6 +318,7 @@ int main(void)
 		printf("error: %s: axi_jesd204_tx_init_legacy() failed\n", tx_jesd_init.name);
 		goto error_2;
 	}
+	printf("[ OK ] axi_jesd204_tx_init: JESD link layer initialised\n");
 
 	ad9172_param.dac_clk = hmc7044_device->clk_desc[2];
 	ad9172_param.clk_data = tx_adxcvr->clk_out;
@@ -239,6 +328,7 @@ int main(void)
 		printf("ad9172_init() error: %"PRIi32"\n", status);
 		goto error_4;
 	}
+	printf("[ OK ] ad9172_init: DAC initialised\n");
 
 	struct jesd204_topology *topology;
 	struct jesd204_topology_dev devs[] = {
@@ -264,7 +354,28 @@ int main(void)
 	jesd204_topology_init(&topology, devs,
 			      sizeof(devs) / sizeof(*devs));
 
+	/* The lane arrives with P/N swapped: invert logical lane 0 in the DAC */
+	ad917x_jesd_invert_lane(&ad9172_device->st->dac_h, 0, 1);
+
 	jesd204_fsm_start(topology, JESD204_LINKS_ALL);
+		{
+		ad917x_handle_t *h = &ad9172_device->st->dac_h;
+		uint8_t v;
+		uint16_t r;
+
+		printf("ILAS received 0x400-0x40E:");
+		for (r = 0x400; r <= 0x40E; r++) {
+			ad917x_register_read(h, r, &v);
+			printf(" %02X", v);
+		}
+		printf("\nILAS expected 0x450-0x45D:");
+		for (r = 0x450; r <= 0x45D; r++) {
+			ad917x_register_read(h, r, &v);
+			printf(" %02X", v);
+		}
+		printf("\n");
+	}
+	printf("[ OK ] JESD204 state machine finished (the link status printed below tells if it worked)\n");
 #else
 	status = axi_jesd204_tx_init_legacy(&tx_jesd, &tx_jesd_init);
 	if (status != 0) {
@@ -306,8 +417,11 @@ int main(void)
 		printf("axi_dac_init() error: %"PRIi32"\n", status);
 		goto error_5;
 	}
+	printf("[ OK ] axi_dac_init: DAC data core initialised\n");
 
+	printf("---- JESD204 TX link status (you want to see: Link status: DATA) ----\n");
 	axi_jesd204_tx_status_read(tx_jesd);
+	printf("----------------------------------------------------------------------\n");
 
 #ifdef DMA_EXAMPLE
 	extern const uint32_t sine_lut_iq[1024];
@@ -335,6 +449,7 @@ int main(void)
 	status = axi_dmac_transfer_wait_completion(tx_dmac, 500);
 	if (status)
 		return status;
+	printf("[ OK ] DMA transfer complete\n");
 	/* Flush cache data. */
 	Xil_DCacheInvalidateRange((uintptr_t)DDR_MEM_BASEADDR,
 				  sizeof(sine_lut_iq) * (tx_dac->num_channels / 2));
@@ -424,6 +539,7 @@ int main(void)
 
 #endif
 
+	printf("===== DONE. If 'Link status: DATA' is shown above, the JESD204 interface is up =====\n");
 	printf("Bye\n");
 
 error_5:
@@ -436,6 +552,7 @@ error_2:
 	axi_jesd204_tx_remove(tx_jesd);
 error_1:
 	hmc7044_remove(hmc7044_device);
+error_0:	/* ADDED: nothing to remove */
 
 #ifdef XILINX_PLATFORM
 	/* Disable the instruction cache. */
