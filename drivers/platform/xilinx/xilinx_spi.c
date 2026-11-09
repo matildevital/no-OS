@@ -22,6 +22,8 @@
 #include "no_os_spi.h"
 #include "no_os_alloc.h"
 #include "xilinx_spi.h"
+#include <stdio.h>
+#include "xil_io.h"
 
 #warning SPI delays are not supported on the xilinx platform
 
@@ -133,7 +135,8 @@ static int32_t spi_init_ps(struct no_os_spi_desc *desc,
 	xdesc->type = xinit->type;
 	xdesc->flags = xinit->flags;
 
-	xdesc->instance = (XSpiPs*)no_os_malloc(sizeof(XSpiPs));
+	//xdesc->instance = (XSpiPs*)no_os_malloc(sizeof(XSpiPs));
+	xdesc->instance = (XSpiPs*)no_os_calloc(1, sizeof(XSpiPs));
 	if (!xdesc->instance)
 		goto ps_error;
 
@@ -151,6 +154,16 @@ static int32_t spi_init_ps(struct no_os_spi_desc *desc,
 				   ->BaseAddress);
 	if (ret != 0)
 		goto ps_error;
+	
+	//#ifdef SDT
+	//	printf("spi_init_ps: SDT defined in xilinx_spi.c, base_addr=0x%08lx\n",
+	//		(unsigned long)xinit->base_addr);
+	//#else
+	//	printf("spi_init_ps: SDT NOT defined in xilinx_spi.c, device_id=%u\n",
+	//		(unsigned)param->device_id);
+	//#endif
+	//	printf("spi_init_ps: driver will use base address 0x%08lx\n",
+	//		(unsigned long)((XSpiPs *)xdesc->instance)->Config.BaseAddress);
 
 	input_clock = ((XSpiPs_Config*)xdesc->config)->InputClockHz;
 
@@ -344,7 +357,11 @@ int32_t xil_spi_write_and_read(struct no_os_spi_desc *desc,
 				      ((desc->mode & NO_OS_SPI_CPHA) ?
 				       XSP_CLK_PHASE_1_OPTION : 0));
 		if (ret != 0)
-			goto error;
+			if (ret != 0) {
+				printf("SPI failed at SetOptions: %d\n", (int)ret);
+				goto error;
+			}
+			//goto error;
 
 		ctrl_reg = XSpi_GetControlReg(((XSpi*)xdesc->instance));
 		if (desc->bit_order == NO_OS_SPI_BIT_ORDER_LSB_FIRST)
@@ -356,14 +373,22 @@ int32_t xil_spi_write_and_read(struct no_os_spi_desc *desc,
 		ret = XSpi_SetSlaveSelect(xdesc->instance,
 					  0x01 << desc->chip_select);
 		if (ret != 0)
-			goto error;
+			//goto error;
+			if (ret != 0) {
+				printf("SPI failed at SetSlaveSelect: %d\n", (int)ret);
+				goto error;
+			}
 
 		ret = XSpi_Transfer(xdesc->instance,
 				    data,
 				    data,
 				    bytes_number);
 		if (ret != 0)
-			goto error;
+			//goto error;
+			if (ret != 0) {
+				printf("SPI failed at XSpi_Transfer: %d\n", (int)ret);
+				goto error;
+			}
 #endif
 		break;
 	case SPI_PS:
@@ -383,13 +408,30 @@ int32_t xil_spi_write_and_read(struct no_os_spi_desc *desc,
 		ret = XSpiPs_SetSlaveSelect(xdesc->instance,
 					    desc->chip_select);
 		if (ret != 0)
-			goto error;
+			//goto error;
+			if (ret != 0) {
+				printf("SPI failed at SetSlaveSelect: %d\n", (int)ret);
+				goto error;
+			}
+		
+		/*printf("before: CR=0x%08lx ISR=0x%08lx EN=0x%08lx\n",
+			(unsigned long)Xil_In32(0xFF040000),
+			(unsigned long)Xil_In32(0xFF040004),
+			(unsigned long)Xil_In32(0xFF040014));*/
+
 		ret = XSpiPs_PolledTransfer(xdesc->instance,
 					    data,
 					    data,
 					    bytes_number);
 		if (ret != 0)
-			goto error;
+			//goto error;
+			if (ret != 0) {
+				//printf("SPI failed at PolledTransfer: %d\n", (int)ret);
+				printf("SPI failed at PolledTransfer: %d, CR=0x%08lx EN=0x%08lx\n", (int)ret,
+			       (unsigned long)Xil_In32(0xFF040000),
+ 			      (unsigned long)Xil_In32(0xFF040014));
+				goto error;
+			}
 		ret = XSpiPs_SetSlaveSelect(xdesc->instance, SPI_DEASSERT_CURRENT_SS);
 		if (ret != 0)
 			goto error;
